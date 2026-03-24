@@ -1,0 +1,184 @@
+name: vcpkg Publishing
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (e.g., 0.1.0)'
+        required: true
+        type: string
+
+jobs:
+  publish-to-vcpkg:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    
+    steps:
+      - name: Checkout raygpu repository
+        uses: actions/checkout@v4
+        with:
+          path: raygpu
+      
+      - name: Checkout vcpkg registry
+        uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          path: vcpkg
+          token: ${{ secrets.VCPKG_PAT }}
+      
+      - name: Set version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            VERSION="${{ github.event.release.tag_name }}"
+            VERSION="${VERSION#v}"
+          else
+            VERSION="${{ inputs.version }}"
+          fi
+          echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Publishing version: ${VERSION}"
+      
+      - name: Calculate SHA512
+        id: sha512
+        working-directory: raygpu
+        run: |
+          # Create a tarball of the source
+          git archive --format=tar.gz --prefix=raygpu-${{ steps.version.outputs.VERSION }}/ HEAD > ../raygpu-${{ steps.version.outputs.VERSION }}.tar.gz
+          SHA512=$(sha512sum ../raygpu-${{ steps.version.outputs.VERSION }}.tar.gz | awk '{print $1}')
+          echo "SHA512=${SHA512}" >> $GITHUB_OUTPUT
+          echo "Calculated SHA512: ${SHA512}"
+      
+      - name: Create/Update port in vcpkg
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          SHA512="${{ steps.sha512.outputs.SHA512 }}"
+          
+          # Create port directory if it doesn't exist
+          mkdir -p vcpkg/ports/raygpu
+          
+          # Copy port files from raygpu repository
+          cp raygpu/ports/raygpu/vcpkg.json vcpkg/ports/raygpu/
+          cp raygpu/ports/raygpu/portfile.cmake vcpkg/ports/raygpu/
+          
+          # Update version in vcpkg.json
+          sed -i "s/\"version-string\": \".*\"/\"version-string\": \"${VERSION}\"/" vcpkg/ports/raygpu/vcpkg.json
+          
+          # Update SHA512 in portfile.cmake
+          sed -i "s/SHA512 0/SHA512 ${SHA512}/" vcpkg/ports/raygpu/portfile.cmake
+          
+          echo "Port files updated with version ${VERSION}"
+      
+      - name: Update versions database
+        working-directory: vcpkg
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          
+          # Create versions directory if it doesn't exist
+          mkdir -p versions/r-
+          
+          # Create or update baseline.json entry
+          python3 << EOF
+          import json
+          import os
+          from datetime import datetime
+          
+          version = "${VERSION}"
+          
+          # Update versions/r-/raygpu.json
+          versions_file = "versions/r-/raygpu.json"
+          if os.path.exists(versions_file):
+              with open(versions_file, 'r') as f:
+                  versions_data = json.load(f)
+          else:
+              versions_data = {"versions": []}
+          
+          # Add new version entry
+          new_version = {
+              "version-string": version,
+              "git-tree": "HEAD"
+          }
+          
+          # Check if version already exists
+          exists = any(v.get("version-string") == version for v in versions_data["versions"])
+          if not exists:
+              versions_data["versions"].insert(0, new_version)
+          
+          with open(versions_file, 'w') as f:
+              json.dump(versions_data, f, indent=2)
+          
+          # Update versions/baseline.json
+          baseline_file = "versions/baseline.json"
+          if os.path.exists(baseline_file):
+              with open(baseline_file, 'r') as f:
+                  baseline_data = json.load(f)
+          else:
+              baseline_data = {"default": {}}
+          
+          if "raygpu" not in baseline_data["default"]:
+              baseline_data["default"]["raygpu"] = {}
+          
+          baseline_data["default"]["raygpu"]["baseline"] = version
+          
+          with open(baseline_file, 'w') as f:
+              json.dump(baseline_data, f, indent=2)
+          
+          print(f"Updated versions database for raygpu version {version}")
+          EOF
+      
+      - name: Create Pull Request to vcpkg
+        working-directory: vcpkg
+        env:
+          GH_TOKEN: ${{ secrets.VCPKG_PAT }}
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          BRANCH_NAME="raygpu-${VERSION}"
+          
+          # Configure git
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Create and checkout new branch
+          git checkout -b "${BRANCH_NAME}"
+          
+          # Add changes
+          git add ports/raygpu/
+          git add versions/r-/raygpu.json
+          git add versions/baseline.json
+          
+          # Commit changes
+          git commit -m "[raygpu] Update to version ${VERSION}"
+          
+          # Push to fork (requires VCPKG_PAT to have access to a fork)
+          git push origin "${BRANCH_NAME}"
+          
+          # Create PR using GitHub CLI
+          gh pr create \
+            --repo microsoft/vcpkg \
+            --title "[raygpu] Update to version ${VERSION}" \
+            --body "This PR updates raygpu to version ${VERSION}.
+
+          **Release Notes:**
+          - Updated from https://github.com/manuel5975p/raygpu/releases/tag/v${VERSION}
+          
+          **Testing:**
+          - [ ] Built successfully on Windows
+          - [ ] Built successfully on Linux  
+          - [ ] Built successfully on macOS
+          
+          cc: @manuel5975p" \
+            --head "${BRANCH_NAME}"
+      
+      - name: Test port locally
+        working-directory: vcpkg
+        run: |
+          # Bootstrap vcpkg
+          ./bootstrap-vcpkg.sh
+          
+          # Test install the port
+          ./vcpkg install raygpu --overlay-ports=ports/raygpu
+          
+          echo "Port installed successfully!"

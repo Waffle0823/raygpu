@@ -23,10 +23,10 @@ jobs:
         with:
           path: raygpu
       
-      - name: Checkout vcpkg registry
+      - name: Checkout vcpkg registry (from fork)
         uses: actions/checkout@v4
         with:
-          repository: microsoft/vcpkg
+          repository: ${{ github.repository_owner }}/vcpkg
           path: vcpkg
           token: ${{ secrets.VCPKG_PAT }}
       
@@ -136,10 +136,14 @@ jobs:
         run: |
           VERSION="${{ steps.version.outputs.VERSION }}"
           BRANCH_NAME="raygpu-${VERSION}"
+          FORK_OWNER="${{ github.repository_owner }}"
           
           # Configure git
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Add microsoft/vcpkg as upstream remote
+          git remote add upstream https://github.com/microsoft/vcpkg.git || true
           
           # Create and checkout new branch
           git checkout -b "${BRANCH_NAME}"
@@ -152,10 +156,10 @@ jobs:
           # Commit changes
           git commit -m "[raygpu] Update to version ${VERSION}"
           
-          # Push to fork (requires VCPKG_PAT to have access to a fork)
-          git push origin "${BRANCH_NAME}"
+          # Push to your fork
+          git push -u origin "${BRANCH_NAME}"
           
-          # Create PR using GitHub CLI
+          # Create PR using GitHub CLI from your fork to microsoft/vcpkg
           gh pr create \
             --repo microsoft/vcpkg \
             --title "[raygpu] Update to version ${VERSION}" \
@@ -170,7 +174,7 @@ jobs:
           - [ ] Built successfully on macOS
           
           cc: @manuel5975p" \
-            --head "${BRANCH_NAME}"
+            --head "${FORK_OWNER}:${BRANCH_NAME}"
       
       - name: Test port locally
         working-directory: vcpkg

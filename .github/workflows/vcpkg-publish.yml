@@ -44,13 +44,15 @@ jobs:
       
       - name: Calculate SHA512
         id: sha512
-        working-directory: raygpu
         run: |
-          # Create a tarball of the source
-          git archive --format=tar.gz --prefix=raygpu-${{ steps.version.outputs.VERSION }}/ HEAD > ../raygpu-${{ steps.version.outputs.VERSION }}.tar.gz
-          SHA512=$(sha512sum ../raygpu-${{ steps.version.outputs.VERSION }}.tar.gz | awk '{print $1}')
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          # Download from GitHub's archive URL (same source vcpkg will use)
+          ARCHIVE_URL="https://github.com/manuel5975p/raygpu/archive/v${VERSION}.tar.gz"
+          wget -O raygpu-${VERSION}.tar.gz "${ARCHIVE_URL}"
+          SHA512=$(sha512sum raygpu-${VERSION}.tar.gz | awk '{print $1}')
           echo "SHA512=${SHA512}" >> $GITHUB_OUTPUT
           echo "Calculated SHA512: ${SHA512}"
+          echo "Downloaded from: ${ARCHIVE_URL}"
       
       - name: Create/Update port in vcpkg
         run: |
@@ -71,6 +73,17 @@ jobs:
           sed -i "s/SHA512 0/SHA512 ${SHA512}/" vcpkg/ports/raygpu/portfile.cmake
           
           echo "Port files updated with version ${VERSION}"
+      
+      - name: Test port locally
+        working-directory: vcpkg
+        run: |
+          # Bootstrap vcpkg
+          ./bootstrap-vcpkg.sh
+          
+          # Test install the port
+          ./vcpkg install raygpu --overlay-ports=ports/raygpu
+          
+          echo "✓ Port installed successfully!"
       
       - name: Update versions database
         working-directory: vcpkg
@@ -175,14 +188,3 @@ jobs:
           
           cc: @manuel5975p" \
             --head "${FORK_OWNER}:${BRANCH_NAME}"
-      
-      - name: Test port locally
-        working-directory: vcpkg
-        run: |
-          # Bootstrap vcpkg
-          ./bootstrap-vcpkg.sh
-          
-          # Test install the port
-          ./vcpkg install raygpu --overlay-ports=ports/raygpu
-          
-          echo "Port installed successfully!"
